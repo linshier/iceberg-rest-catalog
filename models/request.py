@@ -52,7 +52,7 @@ class RegisterTableRequest(BaseModel):
     """  # noqa: E501
 
     name: StrictStr
-    metadata_location: StrictStr = Field()
+    metadata_location: StrictStr = Field(default=None, alias="metadata-location")
 
 
 class CommitTableRequest(BaseModel):

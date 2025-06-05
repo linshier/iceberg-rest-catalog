@@ -120,6 +120,7 @@ def list_namespaces(
 ) -> ListNamespacesResponse:
     """List all namespaces at a certain level, optionally starting from a given parent namespace. If table accounting.tax.paid.info exists, using &#39;SELECT NAMESPACE IN accounting&#39; would translate into &#x60;GET /namespaces?parent&#x3D;accounting&#x60; and must return a namespace, [\&quot;accounting\&quot;, \&quot;tax\&quot;] only. Using &#39;SELECT NAMESPACE IN accounting.tax&#39; would translate into &#x60;GET /namespaces?parent&#x3D;accounting%1Ftax&#x60; and must return a namespace, [\&quot;accounting\&quot;, \&quot;tax\&quot;, \&quot;paid\&quot;]. If &#x60;parent&#x60; is not provided, all top-level namespaces should be listed."""
     try:
+        parent = tuple() if parent is None else parent
         namespaces = catalog.list_namespaces(parent)
     except NoSuchNamespaceError:
         raise HTTPException(
@@ -268,6 +269,7 @@ class LoadTableResult(BaseModel):
     metadata_location: Optional[StrictStr] = Field(
         default=None,
         description="May be null if the table is staged as part of a transaction",
+        alias='metadata-location',
     )
     metadata: TableMetadata
     config: Optional[Dict[str, StrictStr]] = None
@@ -358,6 +360,7 @@ def _create_table(
     tags=["Catalog API"],
     summary="Register a table in the given namespace using given metadata file location",
     response_model_by_alias=True,
+    response_model_exclude_none=True,
 )
 def register_table(
     namespace: str = Path(
@@ -368,8 +371,9 @@ def register_table(
 ) -> LoadTableResult:
     """Register a table using given metadata file location."""
     try:
+        namespace = tuple(namespace.split('\x1F'))
         tbl = catalog.register_table(
-            identifier=(namespace, register_table_request.name),
+            identifier=(*namespace, register_table_request.name),
             metadata_location=register_table_request.metadata_location,
         )
     except NoSuchNamespaceError:
