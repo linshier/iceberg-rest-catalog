@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Union
 from fastapi import Body, FastAPI, HTTPException, Path, Query
 from pydantic import BaseModel, Field, StrictStr
 
+from pyiceberg.catalog.rest import NAMESPACE_SEPARATOR
 from pyiceberg.table import TableIdentifier
 from pyiceberg.table.metadata import TableMetadata
 from pyiceberg.exceptions import (
@@ -120,8 +121,8 @@ def list_namespaces(
 ) -> ListNamespacesResponse:
     """List all namespaces at a certain level, optionally starting from a given parent namespace. If table accounting.tax.paid.info exists, using &#39;SELECT NAMESPACE IN accounting&#39; would translate into &#x60;GET /namespaces?parent&#x3D;accounting&#x60; and must return a namespace, [\&quot;accounting\&quot;, \&quot;tax\&quot;] only. Using &#39;SELECT NAMESPACE IN accounting.tax&#39; would translate into &#x60;GET /namespaces?parent&#x3D;accounting%1Ftax&#x60; and must return a namespace, [\&quot;accounting\&quot;, \&quot;tax\&quot;, \&quot;paid\&quot;]. If &#x60;parent&#x60; is not provided, all top-level namespaces should be listed."""
     try:
-        parent = tuple() if parent is None else parent
-        namespaces = catalog.list_namespaces(parent)
+        parent_tuple = tuple() if parent is None else tuple(parent.split(NAMESPACE_SEPARATOR))
+        namespaces = catalog.list_namespaces(parent_tuple)
     except NoSuchNamespaceError:
         raise HTTPException(
             status_code=404, detail=f"Namespace does not exist: {parent}"
@@ -143,7 +144,7 @@ def load_namespace_metadata(
     ),
 ) -> GetNamespaceResponse:
     """Return all stored metadata properties for a given namespace"""
-    namespace_tuple = (namespace,)
+    namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
     try:
         properties = catalog.load_namespace_properties(namespace=namespace_tuple)
     except NoSuchNamespaceError:
@@ -165,7 +166,7 @@ def drop_namespace(
         description="A namespace identifier as a single string. Multipart namespace parts should be separated by the unit separator (&#x60;0x1F&#x60;) byte.",
     ),
 ) -> None:
-    namespace_tuple = (namespace,)
+    namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
     try:
         catalog.drop_namespace(namespace_tuple)
     except NoSuchNamespaceError:
@@ -192,7 +193,8 @@ def namespace_exists(
 ) -> None:
     """Check if a namespace exists. The response does not contain a body."""
     try:
-        catalog.load_namespace_properties(namespace=namespace)
+        namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
+        catalog.load_namespace_properties(namespace=namespace_tuple)
     except NoSuchNamespaceError:
         raise HTTPException(
             status_code=404, detail=f"Namespace does not exist: {namespace}"
@@ -216,7 +218,7 @@ def update_namespace_properties(
     ),
 ) -> UpdateNamespacePropertiesResponse:
     """Set and/or remove properties on a namespace. The request body specifies a list of properties to remove and a map of key value pairs to update. Properties that are not in the request are not modified or removed by this call. Server implementations are not required to support namespace properties."""
-    namespace_tuple = (namespace,)
+    namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
     try:
         summary = catalog.update_namespace_properties(
             namespace=namespace_tuple,
@@ -249,13 +251,14 @@ def list_tables(
 ) -> ListTablesResponse:
     """Return all table identifiers under this namespace"""
     try:
-        identifiers = catalog.list_tables(namespace=namespace)
+        namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
+        identifiers = catalog.list_tables(namespace=namespace_tuple)
     except NoSuchNamespaceError:
         raise HTTPException(
             status_code=404, detail=f"Namespace does not exist: {namespace}"
         )
     table_identifiers = [
-        TableIdentifier(namespace=[identifier[0]], name=identifier[1])
+        TableIdentifier(namespace=identifier[:-1], name=identifier[-1])
         for identifier in identifiers
     ]
     return ListTablesResponse(identifiers=table_identifiers)
@@ -289,7 +292,8 @@ def create_table(
     create_table_request: CreateTableRequest = Body(None, description=""),
 ) -> LoadTableResult:
     """Create a table or start a create transaction, like atomic CTAS.  If &#x60;stage-create&#x60; is false, the table is created immediately.  If &#x60;stage-create&#x60; is true, the table is not created, but table metadata is initialized and returned. The service should prepare as needed for a commit to the table commit endpoint to complete the create transaction. The client uses the returned metadata to begin a transaction. To commit the transaction, the client sends all create and subsequent changes to the table commit route. Changes from the table create operation include changes like AddSchemaUpdate and SetCurrentSchemaUpdate that set the initial table state."""
-    identifier = (namespace, create_table_request.name)
+    namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
+    identifier = (*namespace_tuple, create_table_request.name)
     if create_table_request.stage_create:
         return _stage_create_table(identifier, create_table_request)
     else:
@@ -371,9 +375,9 @@ def register_table(
 ) -> LoadTableResult:
     """Register a table using given metadata file location."""
     try:
-        namespace = tuple(namespace.split('\x1F'))
+        namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
         tbl = catalog.register_table(
-            identifier=(*namespace, register_table_request.name),
+            identifier=(*namespace_tuple, register_table_request.name),
             metadata_location=register_table_request.metadata_location,
         )
     except NoSuchNamespaceError:
@@ -408,7 +412,8 @@ def load_table(
 ) -> LoadTableResult:
     """Load a table from the catalog.  The response contains both configuration and table metadata. The configuration, if non-empty is used as additional configuration for the table that overrides catalog configuration. For example, this configuration may change the FileIO implementation to be used for the table.  The response also contains the table&#39;s full metadata, matching the table metadata JSON file.  The catalog configuration may contain credentials that should be used for subsequent requests for the table. The configuration key \&quot;token\&quot; is used to pass an access token to be used as a bearer token for table requests. Otherwise, a token may be passed using a RFC 8693 token type as a configuration key. For example, \&quot;urn:ietf:params:oauth:token-type:jwt&#x3D;&lt;JWT-token&gt;\&quot;."""
     try:
-        identifier = (namespace, table)
+        namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
+        identifier = (*namespace_tuple, table)
         tbl = catalog.load_table(identifier=identifier)
     except NoSuchTableError:
         raise HTTPException(
@@ -438,8 +443,9 @@ def update_table(
     """Commit updates to a table.  Commits have two parts, requirements and updates. Requirements are assertions that will be validated before attempting to make and commit changes. For example, &#x60;assert-ref-snapshot-id&#x60; will check that a named ref&#39;s snapshot ID has a certain value.  Updates are changes to make to table metadata. For example, after asserting that the current main ref is at the expected snapshot, a commit may add a new child snapshot and set the ref to the new snapshot id.  Create table transactions that are started by createTable with &#x60;stage-create&#x60; set to true are committed using this route. Transactions should include all changes to the table, including table initialization, like AddSchemaUpdate and SetCurrentSchemaUpdate. The &#x60;assert-create&#x60; requirement is used to ensure that the table was not created concurrently."""
     try:
         if commit_table_request.identifier is None:
+            namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
             commit_table_request.identifier = TableIdentifier(
-                namespace=[namespace], name=table
+                namespace=namespace_tuple, name=table
             )
         resp = catalog._commit_table(commit_table_request)
     except NoSuchTableError:
@@ -468,7 +474,8 @@ def drop_table(
 ) -> None:
     """Remove a table from the catalog"""
     try:
-        catalog.drop_table(identifier=(namespace, table))
+        namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
+        catalog.drop_table(identifier=(*namespace_tuple, table))
     except NoSuchTableError:
         raise HTTPException(
             status_code=404, detail=f"Table does not exist: {(namespace, table)}"
@@ -490,7 +497,8 @@ def table_exists(
 ) -> None:
     """Check if a table exists within a given namespace. The response does not contain a body."""
     try:
-        catalog.load_table(identifier=(namespace, table))
+        namespace_tuple = tuple(namespace.split(NAMESPACE_SEPARATOR))
+        catalog.load_table(identifier=(*namespace_tuple, table))
     except NoSuchTableError:
         raise HTTPException(
             status_code=404, detail=f"Table does not exist: {(namespace, table)}"
